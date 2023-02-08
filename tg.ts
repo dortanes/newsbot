@@ -1,29 +1,15 @@
 import TelegramBot from "node-telegram-bot-api";
-import { getFirestore } from "firebase-admin/firestore";
+import { Query } from "node-appwrite";
 import config from "./config";
-import { Setting } from "./typings/entities/settings.entity";
-
-import collections from "./collections";
+import { Setting, SettingUpdateDto } from "./typings/entities/settings.entity";
+import cols from "./collections";
 import { NewsItem } from "./typings/entities/news.entity";
 import { Source } from "./typings/entities/sources.entity";
-import { add, update } from "typesaurus";
-const cols = collections();
-
-type ColsCache = {
-  news: () => NewsItem[];
-  settings: () => Setting[];
-  sources: () => Source[];
-};
-
 export default class TG {
   private bot = new TelegramBot(config.token, { polling: true });
   private db: FirebaseFirestore.Firestore;
-  private colsCache: ColsCache;
 
-  constructor(colsCache: ColsCache) {
-    this.db = getFirestore();
-    this.colsCache = colsCache;
-
+  constructor() {
     this.bot.onText(/\/start/, (msg) => this.onStartMessage(msg));
     this.bot.on("callback_query", (cq) => this.onCallbackQuery(cq));
   }
@@ -49,12 +35,11 @@ export default class TG {
   }
 
   private async onStartMessage(msg: TelegramBot.Message) {
-    const settings = this.colsCache
-      .settings()
-      .filter((setting) => setting.chatId === msg.chat.id).length;
+    const isProfileExists =
+      (await cols.settings.count([Query.equal("chatId", msg.chat.id)])) > 0;
 
-    if (settings === 0)
-      await add(cols.settings, {
+    if (!isProfileExists)
+      await cols.settings.create({
         userId: Number(msg?.from?.id),
         chatId: Number(msg?.chat.id),
         sources: [],
@@ -73,9 +58,9 @@ export default class TG {
       },
     };
 
-    const settings = this.colsCache
-      .settings()
-      .find((setting) => setting.chatId === msg.chat.id);
+    const settings = await cols.settings.getOne([
+      Query.equal("chatId", msg.chat.id),
+    ]);
     if (!settings) return;
 
     let text: string = "";
@@ -87,26 +72,35 @@ export default class TG {
       text =
         "Предоставляю тебе список источников, которые ты можешь включить, либо исключить из списка новостей.";
 
-      const sources = this.colsCache.sources();
+      const sources = await cols.sources.list();
 
-      sources.forEach((source) => {
+      let curLine = 0;
+      let curCount = 0;
+      keyboard.reply_markup.inline_keyboard[curLine] = [];
+
+      sources.documents.forEach((source) => {
         const enabled = settings?.sources?.includes(source.guid);
 
-        keyboard.reply_markup.inline_keyboard.push([
-          {
-            text: (enabled ? "✅" : "❌") + " " + source.title,
-            callback_data: "src:" + source.guid,
-          },
-        ]);
+        if (curCount % 3 === 0) {
+          curLine++;
+          keyboard.reply_markup.inline_keyboard[curLine] = [];
+        }
+
+        keyboard.reply_markup.inline_keyboard[curLine].push({
+          text: (enabled ? "✅" : "❌") + " " + source.title,
+          callback_data: "src:" + source.guid,
+        });
+
+        curCount++;
       });
     } else {
       // Get source
-      const source = this.colsCache
-        .sources()
-        .find(
-          (source) =>
-            source.guid === action?.replace("toggle:", "")?.replace("src:", "")
-        );
+      const source = await cols.sources.getOne([
+        Query.equal(
+          "guid",
+          action?.replace("toggle:", "")?.replace("src:", "")
+        ),
+      ]);
       if (!source) return;
 
       // Toggle source
@@ -116,7 +110,7 @@ export default class TG {
           ? settings.sources?.splice(settings.sources.indexOf(source.guid), 1)
           : settings.sources?.push(source.guid);
 
-        await update(cols.settings, settings.id, {
+        await cols.settings.update<SettingUpdateDto>(settings.$id, {
           sources: settings.sources,
         });
       }
@@ -161,8 +155,11 @@ export default class TG {
       (item.description !== ""
         ? `\n\n${this._cleanText(item.description)}`
         : ``) +
-      (item.link !== "" ? `\n\n[Источник](${item.link})` : ``) +
-      `\n#${source.title.toLowerCase().replace(/\s/g, "")}`;
+      (item.link !== "" ? `\n\n[Читать в источнике](${item.link})` : ``) +
+      `\n#${source.title
+        .toLowerCase()
+        .replace(/\s/g, "")
+        .replace(/[^a-zA-Zа-яА-Я]/g, "")}`;
 
     console.info(text);
     await this.bot.sendMessage(Number(user.chatId), text, {

@@ -1,30 +1,19 @@
-import config from "./config";
-import { initializeApp, cert } from "firebase-admin/app";
-initializeApp({
-  credential: cert(config.credentialsPath),
-});
-
 import cron from "node-cron";
 import Queue from "promise-queue";
 import dayjs from "dayjs";
-import { add } from "typesaurus";
 import RSS from "./rss";
 import TG from "./tg";
+import config from "./config";
 import { Source } from "./typings/entities/sources.entity";
 import { Setting } from "./typings/entities/settings.entity";
 import { NewsItem } from "./typings/entities/news.entity";
-import collections from "./collections";
-import { useColsCache } from "./colsCache";
+import cols from "./collections";
 import cleanText from "./utils/cleanText.util";
+import { Query } from "node-appwrite";
+import { createHash } from "crypto";
 
-const cols = collections();
-const colsCache = {
-  news: useColsCache<NewsItem>(cols.news),
-  settings: useColsCache<Setting>(cols.settings),
-  sources: useColsCache<Source>(cols.sources),
-};
 const rss = new RSS();
-const tg = new TG(colsCache);
+const tg = new TG();
 const queue = new Queue(1, Infinity);
 
 console.info("app :: started");
@@ -38,59 +27,68 @@ const executeQueue = async (source: Source, user: Setting, item: NewsItem) => {
   await new Promise((r) => setTimeout(r, 300));
 };
 
-cron.schedule("* * * * *", async () => {
-  console.info(
-    "executing a task",
-    colsCache.sources().length,
-    colsCache.settings().length,
-    colsCache.news().length
-  );
-  const sources = colsCache.sources();
-  console.info("finded %s sources", sources.length);
+cron.schedule("*/2 * * * *", async () => {
+  try {
+    console.info("executing a task");
 
-  for (const source of sources) {
-    console.info("parse %s", source.url);
-    // Read RSS feed from url
-    const src = await rss.parse(source.url);
-    const { item: items }: { item: NewsItem[] } = src;
+    const sources = await cols.sources.list();
+    console.info("finded %s sources", sources.total);
 
-    console.info("retreived %s items", items.length);
+    for (const source of sources.documents) {
+      console.info("parse %s", source.url);
+      // Read RSS feed from url
+      const src = await rss.parse(source.url);
+      const { item: items }: { item: NewsItem[] } = src;
 
-    const users = colsCache
-      .settings()
-      .filter((user) => user.sources.includes(source.guid));
+      console.info("retreived %s items", items.length);
 
-    console.info("finded %s users", users.length);
+      const users = await cols.settings.list([
+        Query.search("sources", source.guid),
+      ]);
 
-    items
-      .filter(
-        (item) =>
-          item.guid &&
-          !colsCache.news().find((i) => i.guid === item.guid) &&
-          dayjs().diff(dayjs(item.pubDate), "day") <= 1
-      )
-      .map(async (item: NewsItem) => {
-        const itemData: NewsItem = {
-          content_encoded: "", // item["content:encoded"]
-          dc_creator: item["dc:creator"] ?? "",
-          description: cleanText(item.description) ?? "",
-          enclosure: item.enclosure ?? "",
-          guid: item.guid ?? "",
-          link: item.link ?? "",
-          media_content: item["media:content"] ?? "",
-          pubDate: item.pubDate ?? "",
-          source: source.guid,
-          title: item.title ?? "",
-        };
+      console.info("finded %s users", users.total);
 
-        // Push news item to database
-        await add(cols.news, itemData);
+      items
+        .filter(
+          (item) => item.guid && dayjs().diff(dayjs(item.pubDate), "day") <= 1
+        )
+        .map(async (item: NewsItem) => {
+          const itemId = createHash("md5")
+            .update(JSON.stringify(item.guid ?? item.title))
+            .digest("hex")
+            .slice(0, 36);
 
-        users.map((u) =>
-          queue.add(async () => await executeQueue(source, u, itemData))
-        );
-      });
+          const checkExists =
+            (await cols.news.count([Query.equal("$id", itemId)])) > 0;
+          if (checkExists) return;
+
+          const itemData: NewsItem = {
+            content_encoded: "", // item["content:encoded"]
+            dc_creator: "", //String(item["dc:creator"])?.slice(0, 1000) ?? "",
+            description:
+              cleanText(item.description)
+                .replace(/\n/g, " ")
+                .replace(/&#[\da-fA-F]+;/g, "") ?? "",
+            enclosure: "", //String(item.enclosure)?.slice(0, 1000) ?? "",
+            guid: item.guid ?? "",
+            link: item.link ?? "",
+            media_content: "", // item["media:content"] ?? "",
+            pubDate: item.pubDate ?? "",
+            source: source.guid,
+            title: item.title.replace(/&#[\da-fA-F]+;/g, "") ?? "",
+          };
+
+          // Push news item to database
+          await cols.news.create(itemData, itemId);
+
+          users.documents.map((u) =>
+            queue.add(async () => await executeQueue(source, u, itemData))
+          );
+        });
+    }
+
+    console.log("running a task every minute");
+  } catch (e) {
+    console.error(e);
   }
-
-  console.log("running a task every minute");
 });

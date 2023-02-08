@@ -5,3 +5,10 @@ export interface Setting {
   sources: string[];
   userId: number;
 }
+
+export interface SettingUpdateDto {
+  chatId?: number;
+  isDirect?: boolean;
+  sources?: string[];
+  userId?: number;
+}
