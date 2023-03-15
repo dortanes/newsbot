@@ -1,0 +1,6 @@
+version: '3'
+services:
+  newierra:
+    build:
+      context: .
+      dockerfile: ./Dockerfile

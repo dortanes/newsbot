@@ -1,15 +1,15 @@
 import TelegramBot from "node-telegram-bot-api";
-import { Query } from "node-appwrite";
 import config from "./config";
-import { Setting, SettingUpdateDto } from "./typings/entities/settings.entity";
-import cols from "./collections";
+import { Setting } from "./typings/entities/settings.entity";
 import { NewsItem } from "./typings/entities/news.entity";
 import { Source } from "./typings/entities/sources.entity";
+import { DB } from "./database";
 export default class TG {
   private bot = new TelegramBot(config.token, { polling: true });
-  private db: FirebaseFirestore.Firestore;
+  private db: DB;
 
-  constructor() {
+  constructor(db: DB) {
+    this.db = db;
     this.bot.onText(/\/start/, (msg) => this.onStartMessage(msg));
     this.bot.on("callback_query", (cq) => this.onCallbackQuery(cq));
   }
@@ -36,10 +36,10 @@ export default class TG {
 
   private async onStartMessage(msg: TelegramBot.Message) {
     const isProfileExists =
-      (await cols.settings.count([Query.equal("chatId", msg.chat.id)])) > 0;
+      (await this.db.settings.countDocuments({ chatId: msg.chat.id })) > 0;
 
     if (!isProfileExists)
-      await cols.settings.create({
+      await this.db.settings.insertOne({
         userId: Number(msg?.from?.id),
         chatId: Number(msg?.chat.id),
         sources: [],
@@ -58,9 +58,9 @@ export default class TG {
       },
     };
 
-    const settings = await cols.settings.getOne([
-      Query.equal("chatId", msg.chat.id),
-    ]);
+    const settings = await this.db.settings.findOne({
+      chatId: msg.chat.id,
+    });
     if (!settings) return;
 
     let text: string = "";
@@ -72,13 +72,13 @@ export default class TG {
       text =
         "Предоставляю тебе список источников, которые ты можешь включить, либо исключить из списка новостей.";
 
-      const sources = await cols.sources.list();
+      const sources = await this.db.sources.find().toArray();
 
       let curLine = 0;
       let curCount = 0;
       keyboard.reply_markup.inline_keyboard[curLine] = [];
 
-      sources.documents.forEach((source) => {
+      sources.forEach((source) => {
         const enabled = settings?.sources?.includes(source.guid);
 
         if (curCount % 3 === 0) {
@@ -95,24 +95,34 @@ export default class TG {
       });
     } else {
       // Get source
-      const source = await cols.sources.getOne([
-        Query.equal(
-          "guid",
-          action?.replace("toggle:", "")?.replace("src:", "")
-        ),
-      ]);
+      const source = await this.db.sources.findOne({
+        guid: action?.replace("toggle:", "")?.replace("src:", ""),
+      });
       if (!source) return;
 
       // Toggle source
       if (action?.startsWith("toggle:")) {
-        // Push or remove source
-        settings?.sources?.includes(source.guid)
-          ? settings.sources?.splice(settings.sources.indexOf(source.guid), 1)
-          : settings.sources?.push(source.guid);
-
-        await cols.settings.update<SettingUpdateDto>(settings.$id, {
-          sources: settings.sources,
-        });
+        if (settings?.sources?.includes(source.guid)) {
+          settings.sources.splice(settings.sources.indexOf(source.guid), 1);
+          await this.db.settings.updateOne(
+            { _id: settings._id },
+            {
+              $pull: {
+                sources: source.guid,
+              },
+            }
+          );
+        } else {
+          settings.sources.push(source.guid);
+          await this.db.settings.updateOne(
+            { _id: settings._id },
+            {
+              $push: {
+                sources: source.guid,
+              },
+            }
+          );
+        }
       }
 
       text =
@@ -122,12 +132,12 @@ export default class TG {
         `*Язык:* ${source.language.toUpperCase()}\n` +
         `\n${source.links.join("\n")}`;
 
-      // Check if source is enabled
-      const enabled = settings?.sources?.includes(source.guid);
       // Build keyboard
       keyboard.reply_markup.inline_keyboard.push([
         {
-          text: enabled ? "✅ Подключено" : "❌ Отключено",
+          text: settings?.sources?.includes(source.guid)
+            ? "✅ Подключено"
+            : "❌ Отключено",
           callback_data: "toggle:" + source.guid,
         },
       ]);
