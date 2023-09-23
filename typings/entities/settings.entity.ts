@@ -4,6 +4,7 @@ export interface Setting {
   isDirect: boolean;
   sources: string[];
   userId: number;
+  disabled: boolean;
 }
 
 export interface SettingUpdateDto {
@@ -11,4 +12,5 @@ export interface SettingUpdateDto {
   isDirect?: boolean;
   sources?: string[];
   userId?: number;
+  disabled: boolean;
 }

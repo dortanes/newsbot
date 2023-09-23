@@ -1,14 +1,15 @@
-import cron from "node-cron";
-import Queue from "promise-queue";
-import dayjs from "dayjs";
-import RSS from "./rss";
-import TG from "./tg";
-import config from "./config";
-import { Source } from "./typings/entities/sources.entity";
-import { Setting } from "./typings/entities/settings.entity";
-import { NewsItem } from "./typings/entities/news.entity";
-import cleanText from "./utils/cleanText.util";
-import initMongo from "./database";
+import dayjs from 'dayjs';
+import cron from 'node-cron';
+import Queue from 'promise-queue';
+
+import config from './config';
+import initMongo from './database';
+import RSS from './rss';
+import TG from './tg';
+import { NewsItem } from './typings/entities/news.entity';
+import { Setting } from './typings/entities/settings.entity';
+import { Source } from './typings/entities/sources.entity';
+import cleanText from './utils/cleanText.util';
 
 (async () => {
   const db = await initMongo(config.mongoUrl, config.mongoDb);
@@ -50,6 +51,7 @@ import initMongo from "./database";
         const users = await db.settings
           .find({
             sources: source.guid,
+            disabled: false,
           })
           .toArray();
 

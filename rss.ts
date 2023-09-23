@@ -8,7 +8,7 @@ export default class RSS {
 
     // Parse XML data
     const parser = new XMLParser();
-    const obj = parser.parse(data).rss.channel;
+    const obj = parser.parse(data)["rss"]["channel"];
 
     return obj;
   }

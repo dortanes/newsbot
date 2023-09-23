@@ -1,9 +1,11 @@
-import TelegramBot from "node-telegram-bot-api";
-import config from "./config";
-import { Setting } from "./typings/entities/settings.entity";
-import { NewsItem } from "./typings/entities/news.entity";
-import { Source } from "./typings/entities/sources.entity";
-import { DB } from "./database";
+import TelegramBot from 'node-telegram-bot-api';
+
+import config from './config';
+import { DB } from './database';
+import { NewsItem } from './typings/entities/news.entity';
+import { Setting } from './typings/entities/settings.entity';
+import { Source } from './typings/entities/sources.entity';
+
 export default class TG {
   private bot = new TelegramBot(config.token, { polling: true });
   private db: DB;
@@ -14,7 +16,11 @@ export default class TG {
     this.bot.on("callback_query", (cq) => this.onCallbackQuery(cq));
   }
 
-  private _sendMainMenu(msg: TelegramBot.Message | undefined) {
+  private async _sendMainMenu(msg: TelegramBot.Message | undefined) {
+    const settings = await this.db.settings.findOne({
+      chatId: msg.chat.id,
+    });
+
     this.bot.sendMessage(
       Number(msg?.chat.id),
       "*Привет! Меня зовут Newierra.* Я постоянно слежу за последними новостями от независимых СМИ, и могу поделиться ими с тобой.",
@@ -26,6 +32,12 @@ export default class TG {
               {
                 text: "📰 Источники",
                 callback_data: "sources",
+              },
+              {
+                text: !settings?.disabled
+                  ? "Я не хочу получать новости"
+                  : "Я хочу получать новости",
+                callback_data: "toggleDisabled",
               },
             ],
           ],
@@ -44,9 +56,10 @@ export default class TG {
         chatId: Number(msg?.chat.id),
         sources: [],
         isDirect: Number(msg?.chat.id) > 0,
+        disabled: false,
       });
 
-    this._sendMainMenu(msg);
+    await this._sendMainMenu(msg);
   }
 
   private async onCallbackQuery(callbackQuery: TelegramBot.CallbackQuery) {
@@ -66,7 +79,7 @@ export default class TG {
     let text: string = "";
 
     // Main menu
-    if (action === "main") return this._sendMainMenu(msg);
+    if (action === "main") return await this._sendMainMenu(msg);
     // Sources list
     else if (action === "sources") {
       text =
@@ -93,6 +106,17 @@ export default class TG {
 
         curCount++;
       });
+    } else if (action === "toggleDisabled") {
+      await this.db.settings.updateOne(
+        { _id: settings._id },
+        {
+          $set: {
+            disabled: !settings.disabled,
+          },
+        }
+      );
+
+      await this._sendMainMenu(msg);
     } else {
       // Get source
       const source = await this.db.sources.findOne({
@@ -136,7 +160,7 @@ export default class TG {
       keyboard.reply_markup.inline_keyboard.push([
         {
           text: settings?.sources?.includes(source.guid)
-            ? "✅ Подключено"
+            ? "✅ Включено"
             : "❌ Отключено",
           callback_data: "toggle:" + source.guid,
         },
